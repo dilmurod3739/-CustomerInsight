@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+*.joblib
+*.pkl
+
+# Database
+*.db
+*.sqlite3
+
+# Environment
+.env
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Logs & temp
+*.log
+uploads/*
+!uploads/.gitkeep
