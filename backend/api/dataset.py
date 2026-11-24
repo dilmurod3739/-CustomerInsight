@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 from backend.core.database import get_db
 from backend.models.models import DatasetRecord
 from backend.ml.trainer import clean_data, train_and_evaluate
-from backend.schemas.schemas import DatasetSummary
+from backend.schemas.schemas import DatasetSummary, CustomerFeatures
+from backend.ml.predictor import predictor
 
 router = APIRouter(prefix="/dataset", tags=["Dataset Operations"])
 DEFAULT_DATA_PATH = "data/Telco-Customer-Churn.csv"
@@ -21,7 +22,6 @@ def get_dataset_summary():
     df = pd.read_csv(DEFAULT_DATA_PATH)
     total_customers = len(df)
     
-    # Calculate key EDA metrics
     churn_counts = df["Churn"].value_counts().to_dict()
     churned = churn_counts.get("Yes", 0)
     active = churn_counts.get("No", 0)
@@ -34,7 +34,6 @@ def get_dataset_summary():
     internet_dist = df["InternetService"].value_counts().to_dict()
     payment_dist = df["PaymentMethod"].value_counts().to_dict()
 
-    # Churn rates by segment
     churn_by_contract = df.groupby("Contract")["Churn"].apply(lambda s: round((s == "Yes").mean() * 100, 1)).to_dict()
     churn_by_internet = df.groupby("InternetService")["Churn"].apply(lambda s: round((s == "Yes").mean() * 100, 1)).to_dict()
     churn_by_senior = df.groupby("SeniorCitizen")["Churn"].apply(lambda s: round((s == "Yes").mean() * 100, 1)).to_dict()
@@ -52,6 +51,113 @@ def get_dataset_summary():
         "churn_by_contract": churn_by_contract,
         "churn_by_internet": churn_by_internet,
         "churn_by_senior": churn_by_senior
+    }
+
+@router.get("/customer/{customer_id}")
+def get_customer_by_id(customer_id: str):
+    """Mijoz identifikatori bo'yicha tahlil natijasini olish"""
+    if not os.path.exists(DEFAULT_DATA_PATH):
+        raise HTTPException(status_code=404, detail="Dataset topilmadi.")
+
+    df = pd.read_csv(DEFAULT_DATA_PATH)
+    match = df[df["customerID"].astype(str).str.upper() == customer_id.strip().upper()]
+    if match.empty:
+        raise HTTPException(status_code=404, detail=f"Mijoz topilmadi: {customer_id}")
+
+    row = match.iloc[0].fillna("").to_dict()
+
+    try:
+        total_charges = float(str(row.get("TotalCharges", 0)).strip() or 0)
+    except:
+        total_charges = float(row.get("MonthlyCharges", 50.0)) * max(1, int(row.get("tenure", 1)))
+
+    features = CustomerFeatures(
+        customerID=str(row.get("customerID")),
+        gender=str(row.get("gender", "Female")),
+        SeniorCitizen=int(row.get("SeniorCitizen", 0)),
+        Partner=str(row.get("Partner", "No")),
+        Dependents=str(row.get("Dependents", "No")),
+        tenure=int(row.get("tenure", 1)),
+        PhoneService=str(row.get("PhoneService", "Yes")),
+        MultipleLines=str(row.get("MultipleLines", "No")),
+        InternetService=str(row.get("InternetService", "DSL")),
+        OnlineSecurity=str(row.get("OnlineSecurity", "No")),
+        OnlineBackup=str(row.get("OnlineBackup", "No")),
+        DeviceProtection=str(row.get("DeviceProtection", "No")),
+        TechSupport=str(row.get("TechSupport", "No")),
+        StreamingTV=str(row.get("StreamingTV", "No")),
+        StreamingMovies=str(row.get("StreamingMovies", "No")),
+        Contract=str(row.get("Contract", "Month-to-month")),
+        PaperlessBilling=str(row.get("PaperlessBilling", "Yes")),
+        PaymentMethod=str(row.get("PaymentMethod", "Electronic check")),
+        MonthlyCharges=float(row.get("MonthlyCharges", 50.0)),
+        TotalCharges=total_charges
+    )
+
+    pred = predictor.predict(features)
+    return {
+        "found": True,
+        "customer": row,
+        "analysis": pred.model_dump()
+    }
+
+@router.get("/weekly-report")
+def get_weekly_segmentation_report():
+    """Haftalik mijozlar segmentatsiyasi hisoboti"""
+    if not os.path.exists(DEFAULT_DATA_PATH):
+        raise HTTPException(status_code=404, detail="Dataset topilmadi.")
+
+    df = pd.read_csv(DEFAULT_DATA_PATH)
+    total = len(df)
+    churn_rate = round((df["Churn"] == "Yes").mean() * 100, 1)
+
+    # Segments
+    m2m = df[df["Contract"] == "Month-to-month"]
+    m2m_churn = round((m2m["Churn"] == "Yes").mean() * 100, 1)
+
+    fiber = df[df["InternetService"] == "Fiber optic"]
+    fiber_churn = round((fiber["Churn"] == "Yes").mean() * 100, 1)
+
+    seniors = df[df["SeniorCitizen"] == 1]
+    seniors_churn = round((seniors["Churn"] == "Yes").mean() * 100, 1)
+
+    two_yr = df[df["Contract"] == "Two year"]
+    two_yr_churn = round((two_yr["Churn"] == "Yes").mean() * 100, 1)
+
+    return {
+        "period": "Haftalik yakuniy hisobot",
+        "total_customers": total,
+        "overall_churn_rate": churn_rate,
+        "critical_segments": [
+          {
+            "segment": "Month-to-month shartnomalari",
+            "customers": len(m2m),
+            "churn_rate": m2m_churn,
+            "risk_level": "Yuqori (Kritik)",
+            "priority_action": "1 yillik shartnomaga o'tish uchun 15% chegirma va bonus taqdim etish"
+          },
+          {
+            "segment": "Fiber optic foydalanuvchilari",
+            "customers": len(fiber),
+            "churn_rate": fiber_churn,
+            "risk_level": "Yuqori",
+            "priority_action": "Texnik yordam (TechSupport) xizmatini bepul 1 oy sinovga berish"
+          },
+          {
+            "segment": "Katta yoshli fuqarolar (Senior Citizen)",
+            "customers": len(seniors),
+            "churn_rate": seniors_churn,
+            "risk_level": "O'rta-Yuqori",
+            "priority_action": "Soddalashtirilgan to'lov va maxsus qo'llab-quvvatlash liniyasini ulash"
+          },
+          {
+            "segment": "2 yillik shartnomalar (Sodiq mijozlar)",
+            "customers": len(two_yr),
+            "churn_rate": two_yr_churn,
+            "risk_level": "Juda past (Benchmark)",
+            "priority_action": "Sodiqlik ballari va minnatdorchilik dasturini faollashtirish"
+          }
+        ]
     }
 
 @router.get("/sample")
@@ -72,52 +178,3 @@ def get_dataset_sample(limit: int = 50, offset: int = 0, churn: Optional[str] = 
         "columns": list(df.columns),
         "data": sample_df.to_dict(orient="records")
     }
-
-@router.post("/upload")
-async def upload_custom_dataset(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db)
-):
-    if not file.filename.endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Faqat CSV formatidagi fayllar qabul qilinadi.")
-
-    upload_dir = "uploads"
-    os.makedirs(upload_dir, exist_ok=True)
-    save_path = os.path.join(upload_dir, file.filename)
-
-    with open(save_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    try:
-        df = pd.read_csv(save_path)
-        required_cols = {"tenure", "MonthlyCharges", "Contract", "Churn"}
-        if not required_cols.issubset(set(df.columns)):
-            os.remove(save_path)
-            raise HTTPException(
-                status_code=400,
-                detail=f"Fayl strukturasi mos emas. Kamida quyidagi ustunlar bo'lishi shart: {required_cols}"
-            )
-
-        # Log to DB
-        record = DatasetRecord(
-            filename=file.filename,
-            file_path=save_path,
-            row_count=len(df),
-            col_count=len(df.columns)
-        )
-        db.add(record)
-        db.commit()
-
-        # Re-train model with new dataset
-        train_and_evaluate(save_path)
-
-        return {
-            "message": "Dataset muvaffaqiyatli yuklandi va yangi model o'qitildi!",
-            "rows": len(df),
-            "columns": len(df.columns),
-            "filename": file.filename
-        }
-    except Exception as e:
-        if os.path.exists(save_path):
-            os.remove(save_path)
-        raise HTTPException(status_code=500, detail=f"Faylni qayta ishlashda xatolik: {str(e)}")
